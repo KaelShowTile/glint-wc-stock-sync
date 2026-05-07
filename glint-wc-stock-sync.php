@@ -15,6 +15,7 @@ class WC_D1_Inventory_Sync {
     private $api_namespace = 'wc-d1-sync/v1';
     private $option_key = 'wc_d1_sync_api_key';
     private $option_exclude_cat = 'wc_d1_sync_exclude_cats';
+    private $option_convert_box = 'wc_d1_sync_convert_box';
 
     public function __construct() {
         // 1. 初始化后台设置页面
@@ -64,6 +65,7 @@ class WC_D1_Inventory_Sync {
 
     public function register_settings() {
         register_setting( 'wc_d1_sync_options', $this->option_exclude_cat );
+        register_setting( 'wc_d1_sync_options', $this->option_convert_box );
 
         // 处理重置 API Key 的请求
         if ( isset( $_POST['regenerate_api_key'] ) && current_user_can( 'manage_options' ) ) {
@@ -96,6 +98,7 @@ class WC_D1_Inventory_Sync {
             'hide_empty' => false,
         ) );
         $excluded_cats = get_option( $this->option_exclude_cat, array() );
+        $convert_box = get_option( $this->option_convert_box, '' );
         
         $upload_dir = wp_upload_dir();
         $json_file_url = $upload_dir['baseurl'] . '/wc-d1-products.json';
@@ -142,6 +145,15 @@ class WC_D1_Inventory_Sync {
             <form method="post" action="options.php">
                 <?php settings_fields( 'wc_d1_sync_options' ); ?>
                 <table class="form-table">
+                    <tr>
+                        <th scope="row">Convert to box by step value</th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="<?php echo esc_attr( $this->option_convert_box ); ?>" value="1" <?php checked( '1', $convert_box ); ?>>
+                                Enable stock conversion (divide stock by product's <code>glint_qty_step</code> value and round down)
+                            </label>
+                        </td>
+                    </tr>
                     <tr>
                         <th scope="row">Exclude category</th>
                         <td>
@@ -198,6 +210,8 @@ class WC_D1_Inventory_Sync {
     public function api_update_inventory( $request ) {
         $parameters = $request->get_json_params();
 
+        $convert_box = get_option( $this->option_convert_box, '' );
+
         // 预期 JSON 格式: [ {"id": 123, "stock": 10}, {"id": 456, "stock": 5} ]
         if ( ! is_array( $parameters ) ) {
             return new WP_Error( 'invalid_data', 'Wrong array format', array( 'status' => 400 ) );
@@ -216,6 +230,16 @@ class WC_D1_Inventory_Sync {
             $product = wc_get_product( $product_id );
 
             if ( $product && $product->is_type( 'simple' ) ) {
+                if ( $convert_box == '1' ) {
+                    global $wpdb;
+                    $table_name = $wpdb->prefix . 'glint_product_qty';
+                    $qty_step = floatval( $wpdb->get_var( $wpdb->prepare( "SELECT glint_qty_step FROM {$table_name} WHERE post_id = %d", $product_id ) ) );
+
+                    if ( $qty_step > 0 && $qty_step != 1 ) {
+                        $stock_qty = floor( $stock_qty / $qty_step );
+                    }
+                }
+
                 $product->set_manage_stock( true ); // 确保开启库存管理
                 $product->set_stock_quantity( $stock_qty );
                 $product->save();
