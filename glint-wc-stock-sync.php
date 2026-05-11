@@ -34,6 +34,9 @@ class WC_D1_Inventory_Sync {
         // 4. 注册 WP-Cron 钩子
         add_action( 'wc_d1_sync_generate_json_event', array( $this, 'generate_products_json' ) );
 
+        // 5. 注册前端产品页提示钩子
+        add_action( 'woocommerce_after_add_to_cart_button', array( $this, 'display_custom_stock_notices' ) );
+
         // 插件激活时，确保有一个 API Key，并生成初始 JSON
         register_activation_hook( __FILE__, array( $this, 'plugin_activation' ) );
     }
@@ -227,28 +230,50 @@ class WC_D1_Inventory_Sync {
             $product_id = intval( $item['id'] );
             $stock_qty  = floatval( $item['stock'] ); // 支持带小数库存
             
+            // 接收新字段，若不存在则默认为0
+            $backorder      = isset( $item['backorder'] ) ? intval( $item['backorder'] ) : 0;
+            $force_in_stock = isset( $item['force_in_stock'] ) ? intval( $item['force_in_stock'] ) : 0;
+
             $product = wc_get_product( $product_id );
 
             if ( $product && $product->is_type( 'simple' ) ) {
-                if ( $convert_box == '1' ) {
-                    global $wpdb;
-                    $table_name = $wpdb->prefix . 'glint_product_qty';
-                    $qty_step = floatval( $wpdb->get_var( $wpdb->prepare( "SELECT glint_qty_step FROM {$table_name} WHERE post_id = %d", $product_id ) ) );
+                // 保存新的独立字段 (postmeta)
+                $product->update_meta_data( 'glint_backorder', $backorder );
+                $product->update_meta_data( 'glint_force_in_stock', $force_in_stock );
 
-                    if ( $qty_step > 0 && $qty_step != 1 ) {
-                        $stock_qty = floor( $stock_qty / $qty_step );
+                // 判断强制有货逻辑
+                if ( $force_in_stock === 1 ) {
+                    $product->set_manage_stock( false ); // 停止库存管理
+                    $product->set_stock_status( 'instock' ); // 强制修改状态为 in stock
+                    $product->save();
+                    
+                    $results[] = array(
+                        'id'     => $product_id,
+                        'status' => 'success',
+                        'msg'    => 'Force in stock applied'
+                    );
+                } else {
+                    // 正常库存管理逻辑
+                    if ( $convert_box == '1' ) {
+                        global $wpdb;
+                        $table_name = $wpdb->prefix . 'glint_product_qty';
+                        $qty_step = floatval( $wpdb->get_var( $wpdb->prepare( "SELECT glint_qty_step FROM {$table_name} WHERE post_id = %d", $product_id ) ) );
+
+                        if ( $qty_step > 0 && $qty_step != 1 ) {
+                            $stock_qty = floor( $stock_qty / $qty_step );
+                        }
                     }
-                }
 
-                $product->set_manage_stock( true ); // 确保开启库存管理
-                $product->set_stock_quantity( $stock_qty );
-                $product->save();
-                
-                $results[] = array(
-                    'id'     => $product_id,
-                    'status' => 'success',
-                    'stock'  => $stock_qty
-                );
+                    $product->set_manage_stock( true ); // 确保开启库存管理
+                    $product->set_stock_quantity( $stock_qty );
+                    $product->save();
+                    
+                    $results[] = array(
+                        'id'     => $product_id,
+                        'status' => 'success',
+                        'stock'  => $stock_qty
+                    );
+                }
             } else {
                 $results[] = array(
                     'id'     => $product_id,
@@ -262,6 +287,28 @@ class WC_D1_Inventory_Sync {
             'message' => 'Stock update successfully',
             'data'    => $results
         ) );
+    }
+
+    /**
+     * -------------------------------------------------------------------------
+     * 前端产品展示提示文本
+     * -------------------------------------------------------------------------
+     */
+    public function display_custom_stock_notices() {
+        global $product;
+        
+        if ( ! $product ) {
+            return;
+        }
+
+        $force_in_stock = intval( $product->get_meta( 'glint_force_in_stock' ) );
+        $backorder      = intval( $product->get_meta( 'glint_backorder' ) );
+
+        if ( $force_in_stock === 1 ) {
+            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">Please contact us to confirm stock first</div>';
+        } elseif ( $backorder !== 0 ) {
+            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">Please contact us for backorder</div>';
+        }
     }
 
     /**
