@@ -271,51 +271,63 @@ class WC_D1_Inventory_Sync
                 $product->update_meta_data('glint_backorder', $backorder);
                 $product->update_meta_data('glint_force_in_stock', $force_in_stock);
 
-                // 判断强制有货逻辑
-                if ($force_in_stock === 1) {
-                    $product->set_manage_stock(false); // 停止库存管理
-                    $product->set_stock_status('instock'); // 强制修改状态为 in stock
-                    $product->save();
+                if ($convert_box == '1') {
+                    global $wpdb;
+                    $table_name = $wpdb->prefix . 'glint_product_qty';
+                    $qty_step = floatval($wpdb->get_var($wpdb->prepare("SELECT glint_qty_step FROM {$table_name} WHERE post_id = %d", $product_id)));
 
-                    $results[] = array(
-                        'id' => $product_id,
-                        'status' => 'success',
-                        'msg' => 'Force in stock applied'
-                    );
-                } else {
-                    // 正常库存管理逻辑
-                    if ($convert_box == '1') {
-                        global $wpdb;
-                        $table_name = $wpdb->prefix . 'glint_product_qty';
-                        $qty_step = floatval($wpdb->get_var($wpdb->prepare("SELECT glint_qty_step FROM {$table_name} WHERE post_id = %d", $product_id)));
-
-                        if ($qty_step > 0 && $qty_step != 1) {
-                            $stock_qty = floor($stock_qty / $qty_step);
-                        }
+                    if ($qty_step > 0 && $qty_step != 1) {
+                        $stock_qty = floor($stock_qty / $qty_step);
                     }
+                }
 
-                    $product->set_manage_stock(true); // 确保开启库存管理
-                    $product->set_stock_quantity($stock_qty);
+                $product->set_manage_stock(true); // 确保开启库存管理
+                $product->set_stock_quantity($stock_qty);
 
-                    // 处理 lowest selling stocks
-                    if ($lowest_stock_threshold !== null && $stock_qty < $lowest_stock_threshold) {
-                        $product->set_stock_status('outofstock');
+                // 处理 lowest selling stocks
+                if ($lowest_stock_threshold !== null && $stock_qty < $lowest_stock_threshold) {
+                    // 判断强制有货逻辑
+                    if ($force_in_stock === 1) {
+                        $product->set_manage_stock(false); // 停止库存管理
+                        $product->set_stock_status('instock'); // 强制修改状态为 in stock
+                        $product->save();
+
+                        $results[] = array(
+                            'id' => $product_id,
+                            'status' => 'success',
+                            'msg' => 'Force in stock applied'
+                        );
                     } else {
-                        if ($stock_qty > 0) {
-                            $product->set_stock_status('instock');
+                        $product->set_stock_status('outofstock');
+                    }
+                } else {
+                    if ($stock_qty > 0) {
+                        $product->set_stock_status('instock');
+                    } else {
+                        // 判断强制有货逻辑
+                        if ($force_in_stock === 1) {
+                            $product->set_manage_stock(false); // 停止库存管理
+                            $product->set_stock_status('instock'); // 强制修改状态为 in stock
+                            $product->save();
+
+                            $results[] = array(
+                                'id' => $product_id,
+                                'status' => 'success',
+                                'msg' => 'Force in stock applied'
+                            );
                         } else {
                             $product->set_stock_status('outofstock');
                         }
                     }
-
-                    $product->save();
-
-                    $results[] = array(
-                        'id' => $product_id,
-                        'status' => 'success',
-                        'stock' => $stock_qty
-                    );
                 }
+
+                $product->save();
+
+                $results[] = array(
+                    'id' => $product_id,
+                    'status' => 'success',
+                    'stock' => $stock_qty
+                );
             } else {
                 $results[] = array(
                     'id' => $product_id,
