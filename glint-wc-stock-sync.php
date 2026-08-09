@@ -2,7 +2,7 @@
 /**
  * Plugin Name: ST stock Sync
  * Description: Plugin to sync stock data with ST inventory soft
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Kael
  */
 
@@ -21,31 +21,31 @@ class WC_D1_Inventory_Sync
 
     public function __construct()
     {
-        // 1. 初始化后台设置页面
+        // 1. Hook for admin settings page
         add_action('admin_menu', array($this, 'add_settings_page'));
         add_action('admin_init', array($this, 'register_settings'));
 
-        // 2. 注册 REST API 路由
+        // 2. Hook for REST API
         add_action('rest_api_init', array($this, 'register_api_routes'));
 
-        // 3. 监听产品变动，触发异步 JSON 生成任务
+        // 3. Hook for product status changed
         add_action('woocommerce_new_product', array($this, 'schedule_json_generation'));
         add_action('woocommerce_update_product', array($this, 'schedule_json_generation'));
         add_action('woocommerce_trash_product', array($this, 'schedule_json_generation'));
         add_action('untrashed_post', array($this, 'schedule_json_generation_for_untrash'));
 
-        // 4. 注册 WP-Cron 钩子
+        // 4. Hook for WP-Cron
         add_action('wc_d1_sync_generate_json_event', array($this, 'generate_products_json'));
 
-        // 5. 注册前端产品页提示钩子
+        // 5. hook for product page stock noticies
         add_action('woocommerce_after_add_to_cart_button', array($this, 'display_custom_stock_notices'));
 
-        // 插件激活时，确保有一个 API Key，并生成初始 JSON
+        // Plugin activation
         register_activation_hook(__FILE__, array($this, 'plugin_activation'));
     }
 
     /**
-     * 插件激活时的操作
+     * Plugin activation
      */
     public function plugin_activation()
     {
@@ -57,7 +57,7 @@ class WC_D1_Inventory_Sync
 
     /**
      * -------------------------------------------------------------------------
-     * 后台设置页面与功能
+     * Backend settings
      * -------------------------------------------------------------------------
      */
     public function add_settings_page()
@@ -77,7 +77,7 @@ class WC_D1_Inventory_Sync
         register_setting('wc_d1_sync_options', $this->option_convert_box);
         register_setting('wc_d1_sync_options', $this->option_lowest_stock);
 
-        // 处理重置 API Key 的请求
+        // API Request
         if (isset($_POST['regenerate_api_key']) && current_user_can('manage_options')) {
             check_admin_referer('regenerate_api_key_action', 'regenerate_api_key_nonce');
             $this->generate_new_api_key();
@@ -245,7 +245,7 @@ class WC_D1_Inventory_Sync
         $lowest_stock_val = get_option($this->option_lowest_stock, '');
         $lowest_stock_threshold = ($lowest_stock_val !== '') ? floatval($lowest_stock_val) : null;
 
-        // 预期 JSON 格式: [ {"id": 123, "stock": 10}, {"id": 456, "stock": 5} ]
+        // json format: [ {"id": 123, "stock": 10}, {"id": 456, "stock": 5} ]
         if (!is_array($parameters)) {
             return new WP_Error('invalid_data', 'Wrong array format', array('status' => 400));
         }
@@ -258,16 +258,16 @@ class WC_D1_Inventory_Sync
             }
 
             $product_id = intval($item['id']);
-            $stock_qty = floatval($item['stock']); // 支持带小数库存
+            $stock_qty = floatval($item['stock']); // add float support
 
-            // 接收新字段，若不存在则默认为0
+            // check backorder or force in stock
             $backorder = isset($item['backorder']) ? intval($item['backorder']) : 0;
             $force_in_stock = isset($item['force_in_stock']) ? intval($item['force_in_stock']) : 0;
 
             $product = wc_get_product($product_id);
 
+            //save backorder or force in stock to database(default value is 0)
             if ($product && $product->is_type('simple')) {
-                // 保存新的独立字段 (postmeta)
                 $product->update_meta_data('glint_backorder', $backorder);
                 $product->update_meta_data('glint_force_in_stock', $force_in_stock);
 
@@ -281,53 +281,37 @@ class WC_D1_Inventory_Sync
                     }
                 }
 
-                $product->set_manage_stock(true); // 确保开启库存管理
-                $product->set_stock_quantity($stock_qty);
-
-                // 处理 lowest selling stocks
-                if ($lowest_stock_threshold !== null && $stock_qty < $lowest_stock_threshold) {
-                    // 判断强制有货逻辑
-                    if ($force_in_stock === 1) {
-                        $product->set_manage_stock(false); // 停止库存管理
-                        $product->set_stock_status('instock'); // 强制修改状态为 in stock
-                        $product->save();
-
+                if ($force_in_stock === 1){
+                    $product->set_manage_stock(false); //Stop stock management
+                    $product->set_stock_status('instock'); //Force in stock
+                    $results[] = array(
+                        'id' => $product_id,
+                        'status' => 'success',
+                        'msg' => 'Force in stock applied'
+                    );
+                }else{
+                    if ($lowest_stock_threshold !== null && $stock_qty < $lowest_stock_threshold){
+                        // if low stock
+                        $product->set_manage_stock(false);
+                        $product->set_stock_status('outofstock');
                         $results[] = array(
                             'id' => $product_id,
                             'status' => 'success',
-                            'msg' => 'Force in stock applied'
-                        );
-                    } else {
-                        $product->set_stock_status('outofstock');
-                    }
-                } else {
-                    if ($stock_qty > 0) {
+                            'msg' => 'Low stock applied'
+                        ); 
+                    }else{
+                        //if normal stock
+                        $product->set_manage_stock(true); 
+                        $product->set_stock_quantity($stock_qty);
                         $product->set_stock_status('instock');
-                    } else {
-                        // 判断强制有货逻辑
-                        if ($force_in_stock === 1) {
-                            $product->set_manage_stock(false); // 停止库存管理
-                            $product->set_stock_status('instock'); // 强制修改状态为 in stock
-                            $product->save();
-
-                            $results[] = array(
-                                'id' => $product_id,
-                                'status' => 'success',
-                                'msg' => 'Force in stock applied'
-                            );
-                        } else {
-                            $product->set_stock_status('outofstock');
-                        }
+                        $results[] = array(
+                            'id' => $product_id,
+                            'status' => 'success',
+                            'msg' => 'In stock updated'
+                        );
                     }
                 }
-
                 $product->save();
-
-                $results[] = array(
-                    'id' => $product_id,
-                    'status' => 'success',
-                    'stock' => $stock_qty
-                );
             } else {
                 $results[] = array(
                     'id' => $product_id,
@@ -345,7 +329,7 @@ class WC_D1_Inventory_Sync
 
     /**
      * -------------------------------------------------------------------------
-     * 前端产品展示提示文本
+     * Frontend product display notices
      * -------------------------------------------------------------------------
      */
     public function display_custom_stock_notices()
@@ -368,10 +352,9 @@ class WC_D1_Inventory_Sync
 
     /**
      * -------------------------------------------------------------------------
-     * 异步生成 JSON 索引文件
+     * Async generate JSON file
      * -------------------------------------------------------------------------
      */
-
     public function schedule_json_generation_for_untrash($post_id)
     {
         if (get_post_type($post_id) === 'product') {
@@ -381,7 +364,7 @@ class WC_D1_Inventory_Sync
 
     public function schedule_json_generation($product_id = null)
     {
-        // 使用单次异步事件。加入 5 秒延迟，防止在批量操作或快速保存时触发太多次
+        // Use single async event. Add 5 seconds delay to prevent triggering too many times during bulk operations or quick saves
         if (!wp_next_scheduled('wc_d1_sync_generate_json_event')) {
             wp_schedule_single_event(time() + 5, 'wc_d1_sync_generate_json_event');
         }
@@ -393,18 +376,18 @@ class WC_D1_Inventory_Sync
 
         $query_args = array(
             'post_type' => 'product',
-            'post_status' => 'publish', // 仅获取已发布产品
-            'posts_per_page' => -1,        // 获取全部
+            'post_status' => 'publish', // Only get published products
+            'posts_per_page' => -1,        // Get all products
             'tax_query' => array(
                 array(
                     'taxonomy' => 'product_type',
                     'field' => 'slug',
-                    'terms' => 'simple', // 仅简单产品
+                    'terms' => 'simple', // Only simple products
                 ),
             ),
         );
 
-        // 处理排除的分类
+        // Handle excluded categories
         if (!empty($excluded_cats)) {
             $query_args['tax_query'][] = array(
                 'taxonomy' => 'product_cat',
@@ -427,18 +410,18 @@ class WC_D1_Inventory_Sync
             }
         }
 
-        // 保存 JSON 文件到 wp-content/uploads 根目录
+        // Save JSON file to wp-content/uploads directory
         $upload_dir = wp_upload_dir();
         $file_path = $upload_dir['basedir'] . '/wc-d1-products.json';
 
         $json_content = wp_json_encode($product_data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         if ($json_content) {
-            // 使用 WP_Filesystem 更好，但对于简单的 uploads 目录写入，file_put_contents 足够稳定
+            // Use WP_Filesystem to be better, but for simple uploads directory writing, file_put_contents is stable enough
             file_put_contents($file_path, $json_content);
         }
     }
 }
 
-// 初始化插件
+// Initialize plugin
 new WC_D1_Inventory_Sync();
