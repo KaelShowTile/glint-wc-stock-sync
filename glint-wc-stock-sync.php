@@ -243,7 +243,7 @@ class WC_D1_Inventory_Sync
 
         $convert_box = get_option($this->option_convert_box, '');
         $lowest_stock_val = get_option($this->option_lowest_stock, '');
-        $lowest_stock_threshold = ($lowest_stock_val !== '') ? floatval($lowest_stock_val) : null;
+        $lowest_stock_threshold = ($lowest_stock_val !== '') ? floatval($lowest_stock_val) : 0;
 
         // json format: [ {"id": 123, "stock": 10}, {"id": 456, "stock": 5} ]
         if (!is_array($parameters)) {
@@ -282,15 +282,28 @@ class WC_D1_Inventory_Sync
                 }
 
                 if ($force_in_stock === 1){
-                    $product->set_manage_stock(false); //Stop stock management
-                    $product->set_stock_status('instock'); //Force in stock
-                    $results[] = array(
-                        'id' => $product_id,
-                        'status' => 'success',
-                        'msg' => 'Force in stock applied'
-                    );
+                    if($stock_qty >= $lowest_stock_threshold){
+                        //use normal stock management
+                        $product->set_manage_stock(true); 
+                        $product->set_stock_quantity($stock_qty);
+                        $product->set_stock_status('instock');
+                        $results[] = array(
+                            'id' => $product_id,
+                            'status' => 'success',
+                            'msg' => 'In stock updated'
+                        );
+                    }else{
+                        //stop stock management & force instock
+                        $product->set_manage_stock(false); 
+                        $product->set_stock_status('instock');
+                        $results[] = array(
+                            'id' => $product_id,
+                            'status' => 'success',
+                            'msg' => 'Force in stock applied'
+                        );
+                    } 
                 }else{
-                    if ($lowest_stock_threshold !== null && $stock_qty < $lowest_stock_threshold){
+                    if ($stock_qty < $lowest_stock_threshold){
                         // if low stock
                         $product->set_manage_stock(false);
                         $product->set_stock_status('outofstock');
@@ -300,7 +313,7 @@ class WC_D1_Inventory_Sync
                             'msg' => 'Low stock applied'
                         ); 
                     }else{
-                        //if normal stock
+                        //use normal stock management
                         $product->set_manage_stock(true); 
                         $product->set_stock_quantity($stock_qty);
                         $product->set_stock_status('instock');
@@ -329,7 +342,7 @@ class WC_D1_Inventory_Sync
 
     /**
      * -------------------------------------------------------------------------
-     * Frontend product display notices
+     * Frontend backorder display notices
      * -------------------------------------------------------------------------
      */
     public function display_custom_stock_notices()
@@ -344,9 +357,9 @@ class WC_D1_Inventory_Sync
         $backorder = intval($product->get_meta('glint_backorder'));
 
         if ($force_in_stock === 1) {
-            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">Please contact us to confirm stock first</div>';
+            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">If you want to order more, please contact us for backorder.</div>';
         } elseif ($backorder !== 0) {
-            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">Please contact us for backorder</div>';
+            echo '<div class="glint-stock-notice" style="margin-top: 15px; font-weight: 500;">If you want to order more, please contact us for backorder.</div>';
         }
     }
 
